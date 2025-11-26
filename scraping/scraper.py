@@ -1,0 +1,126 @@
+import abc
+from enum import Enum
+from typing import Dict, List, Optional
+from pydantic import BaseModel, Field, PositiveInt, ConfigDict
+
+from common.data import DataEntity, DataLabel, DataSource, StrictBaseModel
+from common.date_range import DateRange
+from storage.miner.miner_storage import MinerStorage
+
+
+class ScraperId(str, Enum):
+    """The id for each of the scrapers."""
+
+    X_FLASH = "X.flash"
+    REDDIT_CUSTOM = "Reddit.custom"
+    REDDIT_JSON = "Reddit.json"
+    REDDIT_MC = "Reddit.mc"
+    X_MICROWORLDS = "X.microworlds"
+    X_APIDOJO = "X.apidojo"
+    X_LOBSTR = "X.lobstr"
+    X_QUACKER = "X.quacker"
+    X_CUSTOM = "X.custom"
+    YOUTUBE_CUSTOM_TRANSCRIPT = "YouTube.custom.transcript"
+    YOUTUBE_APIFY_EN_TRANSCRIPT = "YouTube.apify.en_transcript"
+    YOUTUBE_APIFY_TRANSCRIPT = "YouTube.apify.transcript"
+    YOUTUBE_CRAWLMASTER_TRANSCRIPT = "YouTube.crawlmaster.transcript"
+    YOUTUBE_STARVIBE_TRANSCRIPT = "YouTube.starvibe.transcript"
+    YOUTUBE_MULTI_ACTOR = "YouTube.multi.actor"
+    YOUTUBE_SCRAPINGDOG_TRANSCRIPT = "YouTube.scrapingdog.transcript"
+
+
+class ValidationResult(StrictBaseModel):
+    """Data class to contain the result of a scraping validation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    is_valid: bool
+    content_size_bytes_validated: int = Field(
+        description="The content size in bytes validated as part of this check", ge=0
+    )
+    reason: str = Field(
+        description="An optional reason for the validation result.",
+        default="",
+    )
+
+
+class S3ValidationResult(StrictBaseModel):
+    """Data class to contain the result of a validation for a miner's S3 uploads."""
+
+    model_config = ConfigDict(frozen=True)
+
+    is_valid: bool
+    validation_percentage: float = Field(
+        description="The percentage of successfully validated S3 data.",
+        ge=0.0,
+        le=100.0
+    )
+    job_count: int = Field(
+        description="The number of jobs found in S3 for this miner.",
+        ge=0
+    )
+    total_files: int = Field(
+        description="The total number of files validated.",
+        ge=0
+    )
+    reason: str = Field(
+        description="An optional reason for the validation result.",
+        default=""
+    )
+
+
+class ScrapeConfig(StrictBaseModel):
+    """Data class to contain the configuration to be used for scraping."""
+
+    model_config = ConfigDict(frozen=True)
+
+    entity_limit: Optional[PositiveInt]
+    date_range: DateRange
+    labels: Optional[List[DataLabel]] = Field(
+        default=None,
+        description="Optional labels to filter the scrape by. If none are provided, the data source will issue a scrape for 'all' data, without any label filters applied",
+    )
+    frequency: Optional[PositiveInt] = Field(
+        default=60,
+        description="cadence_seconds from scraper_config",
+    )
+
+class LabelScrapingFrequency(StrictBaseModel):
+    """Data class to contain the frequency distribution for a set of labels."""
+
+    model_config = ConfigDict(frozen=True)
+
+    labels: List[DataLabel]
+    frequency: float
+
+
+class SourceScrapingFrequency(StrictBaseModel):
+    """Data class to contain the frequency distribution for a source across labels."""
+
+    model_config = ConfigDict(frozen=True)
+
+    source: DataSource
+    frequency: float
+    label_frequencies: List[LabelScrapingFrequency]
+
+
+class ScrapingDistribution(StrictBaseModel):
+    """A relative distribution across sources and labels."""
+
+    model_config = ConfigDict(frozen=True)
+
+    distribution: List[SourceScrapingFrequency]
+
+
+class Scraper(abc.ABC):
+    """An abstract base class for scrapers across all data sources."""
+
+    @abc.abstractmethod
+    async def validate(self, entities: List[DataEntity]) -> List[ValidationResult]:
+        """Validate the correctness of a list of DataEntities by URI."""
+        pass
+
+    @abc.abstractmethod
+    async def scrape(self, scrape_config: ScrapeConfig) -> List[DataEntity]:
+        """Scrapes a batch of data based on the specified ScrapeConfig."""
+        pass
