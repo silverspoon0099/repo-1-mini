@@ -55,8 +55,6 @@ from scraping.scraper import ScrapeConfig, ScraperId
 from scraping.x.apidojo_scraper import ApiDojoTwitterScraper
 from scraping.reddit.reddit_json_scraper import RedditJsonScraper
 
-from vali_utils.on_demand.output_models import create_organic_output_dict
-
 # Enable logging to the miner TODO move it to some different location
 bt.logging.set_info(True)
 bt.logging.set_debug(True)
