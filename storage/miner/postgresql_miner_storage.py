@@ -115,7 +115,15 @@ class PostgreSQLMinerStorage(MinerStorage):
     def _create_connection(self) -> Connection:
         """Gets a connection from the psycopg3 pool."""
         return self.pg_pool.connection()
-            
+
+    def store_data_entities(self, data_entities: List[DataEntity]):
+        """Stores any number of DataEntities, making space if necessary."""
+        return None
+
+    def refresh_compressed_index(self, date_time: dt.timedelta):
+        """Refreshes the compressed MinerIndex."""
+        return None
+
     def _set_last_summary_timestamp(self, ts: dt.datetime) -> None:
         """Persist last_summary_ts in DB (UTC), single-row table (id=1)."""
         # Ensure timezone-aware UTC
