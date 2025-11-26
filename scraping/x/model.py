@@ -77,51 +77,6 @@ class XContent(BaseModel):
     user_following_count: Optional[int] = None
 
     @classmethod
-    def _to_data_entity(
-        cls,
-        content: "XContent",
-        labels: Optional[List[DataLabel]] = None,
-        dd_x_labels: Optional[List[str]] = None,
-    ) -> DataEntity:
-        """Converts the XContent to a DataEntity."""
-        entity_timestamp = content.timestamp
-        content.timestamp = utils.obfuscate_datetime_to_minute(entity_timestamp)
-        content_bytes = content.json(exclude_none=True).encode("utf-8")
-
-        chosen_label = None
-        if content.tweet_hashtags:
-            if dd_x_labels:
-                for label in dd_x_labels:
-                    if label in [tag.lower() for tag in content.tweet_hashtags]:
-                        chosen_label = DataLabel(
-                            value=label[: constants.MAX_LABEL_LENGTH]
-                        )
-                        break
-            if not chosen_label and labels:
-                lower_labels = {label.value.lower() for label in labels}
-                for tag in content.tweet_hashtags:
-                    if tag.lower() in lower_labels:
-                        chosen_label = DataLabel(
-                            value=tag.lower()[: constants.MAX_LABEL_LENGTH]
-                        )
-                        break
-                if not chosen_label:
-                    chosen_label = DataLabel(
-                        value=content.tweet_hashtags[0].lower()[
-                            : constants.MAX_LABEL_LENGTH
-                        ]
-                    )
-
-        return DataEntity(
-            uri=content.url,
-            datetime=entity_timestamp,
-            source=DataSource.X,
-            label=chosen_label,
-            content=content_bytes,
-            content_size_bytes=len(content_bytes),
-        )
-
-    @classmethod
     def to_data_entity(cls, content: "XContent") -> DataEntity:
         """Converts the XContent to a DataEntity."""
         entity_timestamp = content.timestamp
@@ -144,7 +99,7 @@ class XContent(BaseModel):
             content=content_bytes,
             content_size_bytes=len(content_bytes),
         )
-        
+
     @classmethod
     def from_data_entity(cls, data_entity: DataEntity) -> "XContent":
         """Converts a DataEntity to an XContent with backward compatibility for nested format."""

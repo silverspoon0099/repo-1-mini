@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 
 from common.data import StrictBaseModel
 
-load_dotenv(dotenv_path=".env", override=True)
+load_dotenv()
+
 
 class RunConfig(StrictBaseModel):
     """Configuration parameters for a single Apify Actor run."""

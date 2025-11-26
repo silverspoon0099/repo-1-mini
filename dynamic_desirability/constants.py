@@ -2,8 +2,6 @@
 REPO_URL: str = 'https://github.com/macrocosm-os/gravity.git'
 BRANCH_NAME: str = 'main'
 PREFERENCES_FOLDER: str = 'validator_preferences'
-MAIN_CONFIG_OUTPUT_PATH: str = 'scraping/config/main_scraping_config.json'
-X_CONFIG_OUTPUT_PATH: str = 'scraping/config/x_scraping_config.json'
 
 # Total weight of all validators. Subnet (default) voting weight = 1-TOTAL_VALI_WEIGHT. 
 TOTAL_VALI_WEIGHT: float = 0.7

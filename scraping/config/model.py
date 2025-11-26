@@ -59,15 +59,7 @@ class LabelScrapingConfig(StrictBaseModel):
             max_data_entities=self.max_data_entities,
         )
 
-class ScraperSettings(StrictBaseModel):
-    model_config = ConfigDict()
-    cadence_seconds: PositiveInt
-    labels_to_scrape: List[LabelScrapingConfig]
-    reddit_credentials: Optional[dict] = None
-    x_account_id: Optional[str] = None
-    dd_x_labels: Optional[List[str]] = None
-    yt_api_key: Optional[str] = None
-    
+
 class ScraperConfig(StrictBaseModel):
     """Configures a specific scraper."""
 
@@ -75,15 +67,24 @@ class ScraperConfig(StrictBaseModel):
 
     scraper_id: ScraperId = Field(description="The scraper being configured.")
 
-    scraper_config: ScraperSettings
+    cadence_seconds: PositiveInt = Field(
+        description="""Configures how often to scrape from this data source, measured in seconds."""
+    )
+
+    labels_to_scrape: List[LabelScrapingConfig] = Field(
+        description="""Describes the type of data to scrape from this source.
+        
+        The scraper will perform one scrape per entry in this list every 'cadence_seconds'.
+        """
+    )
 
     def to_coordinator_scraper_config(self) -> coordinator.ScraperConfig:
         """Returns the internal ScraperConfig representation"""
         return coordinator.ScraperConfig(
-            cadence_seconds=self.scraper_config.cadence_seconds,
+            cadence_seconds=self.cadence_seconds,
             labels_to_scrape=[
                 label.to_coordinator_label_scrape_config()
-                for label in self.scraper_config.labels_to_scrape
+                for label in self.labels_to_scrape
             ],
         )
 
@@ -106,11 +107,3 @@ class ScrapingConfig(StrictBaseModel):
         return coordinator.CoordinatorConfig(
             scraper_configs={id: config for id, config in ids_and_configs}
         )
-
-
-class MultiAccountScrapingConfig(StrictBaseModel):
-    model_config = ConfigDict()
-
-    scraper_configs: List[ScraperConfig] = Field(
-        description="Flat list of all scraper configurations across accounts and platforms."
-    )

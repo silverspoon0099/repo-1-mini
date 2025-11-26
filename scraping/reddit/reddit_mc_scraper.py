@@ -7,19 +7,9 @@ from dotenv import load_dotenv
 
 from apify_client import ApifyClientAsync
 
-from common.data import (
-    CompressedEntityBucket,
-    CompressedMinerIndex,
-    DataEntity,
-    DataEntityBucket,
-    DataEntityBucketId,
-    DataLabel,
-    DataSource,
-    TimeBucket,
-)
+from common.data import DataEntity, DataLabel, DataSource
 from scraping.scraper import ScrapeConfig, Scraper, ScraperId, ValidationResult
 from scraping.reddit.model import RedditContent
-from utils.custom_logging import setup_bt_logging
 from scraping.reddit.utils import (
     is_valid_reddit_url,
     validate_reddit_content,
@@ -29,7 +19,7 @@ from scraping.reddit.utils import (
     validate_comment_count,
     normalize_label
 )
-from storage.miner.postgresql_miner_storage import PostgreSQLMinerStorage, test_list_data_entities_in_data_entity_bucket
+
 
 load_dotenv()
 
@@ -391,38 +381,8 @@ async def test_scrape_and_validate():
     bt.logging.info("=" * 60)
 
 
-async def test_db_validation():
-    scraper = RedditMCScraper()
-    bucket_id = DataEntityBucketId(
-        time_bucket=TimeBucket(id=490009),
-        source=DataSource.REDDIT.value,
-        label=DataLabel(value="r/zerowaste"),
-    )
-    entities_to_validate = test_list_data_entities_in_data_entity_bucket(bucket_id)
-    validation_results = await scraper.validate(entities=entities_to_validate[:2])
-    bt.logging.debug(validation_results)
-
-async def main():
-    """Main test function."""
-    print("\nFinal Reddit Re-Scraper test")
-    print("=" * 50)
-    print("1. Test DB validation")
-    print("6. Exit")
-
-    choice = input("\nEnter your choice (1-5): ")
-
-    if choice == "1":
-        await test_db_validation()
-    elif choice == "6":
-        print("Exiting.")
-        return
-    else:
-        print("Invalid choice.")
-        await main()
-
-
 if __name__ == "__main__":
-    setup_bt_logging()
-    bt.logging.set_trace(True)
-    bt.logging.info("Starting Final Reddit Scraper tests...")
-    asyncio.run(main())
+    bt.logging.set_trace()
+    # asyncio.run(test_scrape())
+    # asyncio.run(test_validate())
+    asyncio.run(test_scrape_and_validate())

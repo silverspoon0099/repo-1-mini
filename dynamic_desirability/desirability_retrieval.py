@@ -6,10 +6,10 @@ import time
 from typing import Dict, Optional, Any
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime
 import bittensor as bt
 from dynamic_desirability.chain_utils import ChainPreferenceStore, add_args
-from common import constants, utils
+from common import constants
 from common.data import DataLabel, DataSource
 from common.utils import get_validator_data, is_validator, time_bucket_id_from_datetime, parse_iso_date
 from rewards.data import DataSourceDesirability, DataDesirabilityLookup, Job, JobMatcher
@@ -21,7 +21,6 @@ from dynamic_desirability.constants import (REPO_URL,
                                             TOTAL_VALI_WEIGHT,
                                             DEFAULT_SCALE_FACTOR,
                                             AMPLICATION_FACTOR,
-                                            MAIN_CONFIG_OUTPUT_PATH,
                                             MINIMUM_DD_SCALE,
                                             )
 
@@ -356,7 +355,6 @@ async def run_retrieval(config) -> DataDesirabilityLookup:
 
 def sync_run_retrieval(config):
     return asyncio.run(run_retrieval(config))
-    
 
 if __name__ == "__main__":
     asyncio.run(run_retrieval(config=None))

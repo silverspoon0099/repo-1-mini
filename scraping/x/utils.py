@@ -10,7 +10,6 @@ from common.constants import NO_TWITTER_URLS_DATE
 from scraping import utils
 from scraping.scraper import ValidationResult
 from scraping.x.model import XContent
-import re
 
 # Validation fields
 REQUIRED_FIELDS = [
@@ -126,14 +125,6 @@ def extract_hashtags(text: str) -> List[str]:
     # As of python 3.7 dictionary key order is maintained, so we can use this to remove duplicates.
     return list(dict.fromkeys(hashtags))
 
-def _extract_hashtags(text: str) -> List[str]:
-    """Extracts hashtags from a tweet text using regex, filtering out numeric ones like #107k."""
-    hashtag_pattern = re.compile(r"#\w+")
-    hashtags = hashtag_pattern.findall(text)
-
-    # Filter out hashtags that are mostly numeric or contain only digits with optional suffix
-    filtered = [tag for tag in hashtags if not re.match(r"^#\d+[kKmM]?$", tag)]
-    return list(dict.fromkeys(filtered))  # Remove duplicates, preserve order
 
 def sanitize_scraped_tweet(text: str) -> str:
     """Removes leading @user mentions from the tweet."""
@@ -516,31 +507,6 @@ def validate_tweet_content(
     # Final DataEntity validation
     return validate_data_entity_fields(actual_tweet, entity)
 
-
-def remove_kr_hashtags(hashtags):
-    kr_pattern = re.compile(r'[\uac00-\ud7a3]')
-    return [tag for tag in hashtags if not kr_pattern.search(tag)]
-
-import re
-
-def deduplicate_english_hashtags(hashtags):
-    seen = set()
-    result = []
-    for tag in hashtags:
-        if not isinstance(tag, str):  # skip or keep non-string tags
-            continue
-        if tag.startswith("#") or tag.startswith("@"):
-            # Only deduplicate hashtags and mentions with alphanumeric body
-            if re.fullmatch(r"[@#]\w+", tag):
-                tag_lower = tag.lower()
-                if tag_lower not in seen:
-                    seen.add(tag_lower)
-                    result.append(tag)
-            else:
-                result.append(tag)  # keep malformed tags as-is
-        else:
-            result.append(tag)  # non-hashtag/mention keywords kept as-is
-    return result
 
 def validate_engagement_metrics(
     submitted_tweet: XContent, actual_tweet: XContent, entity: DataEntity

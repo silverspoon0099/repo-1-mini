@@ -12,7 +12,6 @@ from scraping.apify import ActorRunner, RunConfig, ActorRunError
 from scraping.scraper import Scraper, ValidationResult
 from scraping.youtube import utils as youtube_utils
 from scraping.youtube.model import YouTubeContent
-from utils.custom_logging import setup_bt_logging
 
 
 load_dotenv()
@@ -472,66 +471,7 @@ async def test_validation():
     print(results)
     return results
 
-async def test_single_video_scrape():
-    video_id = '9DI8g7bBn5s'
-    video_url = f"https://www.youtube.com/watch?v={video_id}"
-    language = 'hi'
-
-    scraper = YouTubeChannelTranscriptScraper()
-    entities = await scraper._scrape_single_video(video_url, language)
-    entity = entities[0]
-
-    content = YouTubeContent.from_data_entity(entity)
-    bt.logging.info(f"  Title: {content.title}")
-    bt.logging.info(f"  Channel: {content.channel_name}")
-    bt.logging.info(f"  Video ID: {content.video_id}")
-    bt.logging.info(f"  Label: {entity.label.value}")
-    bt.logging.info(f"  Language: {content.language}")
-    bt.logging.info(f"  Upload Date: {content.upload_date}")
-    bt.logging.info(f"  Duration: {content.duration_seconds}s")
-    bt.logging.info(f"  Description in transcript: {content.description}")
-    bt.logging.info(f"  Transcript segments: {len(content.transcript)}")
-    bt.logging.info(f"  Subscriber count: {content.subscriber_count}")
-    bt.logging.info(f"  View count: {content.view_count}")
-    bt.logging.info(f"  Like count: {content.like_count}")
-    bt.logging.info(f"  Content size: {entity.content_size_bytes} bytes")
-    bt.logging.info(f"  URL: {content.url}")
-    if content.transcript:
-        first_transcript = content.transcript[0]
-        bt.logging.info(f"  First transcript: {first_transcript}")
-    bt.logging.info("-" * 40)
-
-    return entity
-
-async def main():
-    """Main test function."""
-    print("\nFinal YouTube Channel-Based Transcript Scraper")
-    print("=" * 50)
-    print("1. Test channel scraping")
-    print("2. Test validation")
-    print("3. Test full pipeline")
-    print("4. Test get transcript")
-    print("5. Test scrape single video")
-    print("6. Exit")
-
-    choice = input("\nEnter your choice (1-5): ")
-
-    if choice == "2":
-        await test_validation()
-        return
-    elif choice == "5":
-        await test_single_video_scrape()
-        return
-    elif choice == "6":
-        print("Exiting.")
-        return
-    else:
-        print("Invalid choice.")
-        await main()
-
-
-if __name__ == "__main__":
-    setup_bt_logging()
-    bt.logging.set_trace(True)
-    bt.logging.info("Starting Final YouTube Channel Transcript Scraper tests...")
-    asyncio.run(main())
+if __name__ == '__main__':
+    # asyncio.run(test_scrape_video())
+    # asyncio.run(test_scrape_channel())
+    asyncio.run(test_validation())

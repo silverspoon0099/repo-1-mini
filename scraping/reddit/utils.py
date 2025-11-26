@@ -272,7 +272,7 @@ def get_custom_sort_input(datetime: dt.datetime) -> str:
     # So instead, we'll use the "sort" field to help increase the chances that we get some data
     # from our targetted time window.
     now = dt.datetime.now(tz=dt.timezone.utc)
-    if now - datetime < dt.timedelta(minutes=270):
+    if now - datetime < dt.timedelta(minutes=90):
         return "new"
 
     # For all other time-windows, we randomly pick one of the sort options. This in combination

@@ -7,7 +7,6 @@ from pydantic.v1 import BaseModel, Field
 from common.data import DataEntity, DataLabel, DataSource
 from scraping import utils
 
-NOT_AVAILABLE_LANGUAGES = ["ta", "mr", "he", "ko", "ne"]
 
 def normalize_channel_name(name: str, max_len: int = 50) -> str:
     """

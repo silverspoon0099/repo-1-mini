@@ -13,8 +13,7 @@ from scraping.youtube import utils as youtube_utils
 # Import individual scrapers that already return DataEntity objects
 from scraping.youtube.crawlmaster_transcript_scraper import YouTubeChannelTranscriptScraper as CrawlmasterScraper
 from scraping.youtube.starvibe_transcript_scraper import YouTubeChannelTranscriptScraper as StarvibeScraper
-from scraping.youtube.invideoiq_transcript_scraper import YouTubeChannelTranscriptScraper as InvideoiqScraper, test_channel_scrape
-from scraping.youtube.model import YouTubeContent
+from scraping.youtube.invideoiq_transcript_scraper import YouTubeChannelTranscriptScraper as InvideoiqScraper
 
 load_dotenv()
 
@@ -311,129 +310,6 @@ async def test_scraper_fallback():
             bt.logging.error(f"❌ Failed to scrape video {video_id}")
 
 
-async def test_hybrid_validation():
-    """Test validation functionality."""
-    bt.logging.info("=" * 60)
-    bt.logging.info("STARTING VALIDATION TEST")
-    bt.logging.info("=" * 60)
-
-    bt.logging.info("First, scraping some entities to validate...")
-    entities = await test_channel_scrape()
-
-    if not entities:
-        bt.logging.error("❌ No entities scraped - cannot proceed with validation test")
-        return
-
-    bt.logging.info(f"Got {len(entities)} entities from scrape, proceeding with validation...")
-
-    scraper = YouTubeMultiActorScraper()
-
-    bt.logging.info("Starting validation process...")
-    bt.logging.info(f"Validating {len(entities)} entities...")
-
-    for i, entity in enumerate(entities, 1):
-        content = YouTubeContent.from_data_entity(entity)
-        bt.logging.info(
-            f"Entity {i}: Video {content.video_id} ({content.title[:30]}...) in language {content.language}")
-
-    results = await scraper.validate(entities)
-
-    bt.logging.info(f"Validation completed! Got {len(results)} results")
-
-    bt.logging.info("=" * 40)
-    bt.logging.info("VALIDATION RESULTS:")
-    bt.logging.info("=" * 40)
-
-    valid_count = 0
-    invalid_count = 0
-
-    for i, result in enumerate(results, 1):
-        entity = entities[i - 1]
-        content = YouTubeContent.from_data_entity(entity)
-
-        if result.is_valid:
-            valid_count += 1
-            bt.logging.success(f"✅ Entity {i}: VALID")
-        else:
-            invalid_count += 1
-            bt.logging.error(f"❌ Entity {i}: INVALID")
-
-        bt.logging.info(f"   Video: {content.video_id} ({content.title[:40]}...)")
-        bt.logging.info(f"   Language: {content.language}")
-        bt.logging.info(f"   Reason: {result.reason}")
-        bt.logging.info(f"   Bytes validated: {result.content_size_bytes_validated}")
-        bt.logging.info("-" * 30)
-
-    bt.logging.info("VALIDATION SUMMARY:")
-    bt.logging.success(f"✅ Valid: {valid_count}/{len(results)} ({valid_count / len(results) * 100:.1f}%)")
-    bt.logging.warning(f"❌ Invalid: {invalid_count}/{len(results)} ({invalid_count / len(results) * 100:.1f}%)")
-
-    bt.logging.info("VALIDATION TEST COMPLETED")
-    return results
-
-
-async def test_db_validation():
-    """Test validation functionality."""
-    bt.logging.info("=" * 60)
-    bt.logging.info("STARTING VALIDATION TEST")
-    bt.logging.info("=" * 60)
-
-    bt.logging.info("First, retrieving some entities from DB to validate...")
-    from storage.miner.postgresql_miner_storage import test
-    entities = test()
-
-    if not entities:
-        bt.logging.error("❌ No entities scraped - cannot proceed with validation test")
-        return
-
-    bt.logging.info(f"Got {len(entities)} entities from scrape, proceeding with validation...")
-
-    scraper = YouTubeMultiActorScraper()
-
-    bt.logging.info("Starting validation process...")
-    bt.logging.info(f"Validating {len(entities)} entities...")
-
-    for i, entity in enumerate(entities, 1):
-        content = YouTubeContent.from_data_entity(entity)
-        bt.logging.info(
-            f"Entity {i}: Video {content.video_id} ({content.title[:30]}...) in language {content.language}")
-
-    results = await scraper.validate(entities)
-
-    bt.logging.info(f"Validation completed! Got {len(results)} results")
-
-    bt.logging.info("=" * 40)
-    bt.logging.info("VALIDATION RESULTS:")
-    bt.logging.info("=" * 40)
-
-    valid_count = 0
-    invalid_count = 0
-
-    for i, result in enumerate(results, 1):
-        entity = entities[i - 1]
-        content = YouTubeContent.from_data_entity(entity)
-
-        if result.is_valid:
-            valid_count += 1
-            bt.logging.success(f"✅ Entity {i}: VALID")
-        else:
-            invalid_count += 1
-            bt.logging.error(f"❌ Entity {i}: INVALID")
-
-        bt.logging.info(f"   Video: {content.video_id} ({content.title[:40]}...)")
-        bt.logging.info(f"   Language: {content.language}")
-        bt.logging.info(f"   Reason: {result.reason}")
-        bt.logging.info(f"   Bytes validated: {result.content_size_bytes_validated}")
-        bt.logging.info("-" * 30)
-
-    bt.logging.info("VALIDATION SUMMARY:")
-    bt.logging.success(f"✅ Valid: {valid_count}/{len(results)} ({valid_count / len(results) * 100:.1f}%)")
-    bt.logging.warning(f"❌ Invalid: {invalid_count}/{len(results)} ({invalid_count / len(results) * 100:.1f}%)")
-
-    bt.logging.info("VALIDATION TEST COMPLETED")
-    return results
-
-
 async def main():
     """Main test function."""
     bt.logging.set_trace(True)
@@ -444,9 +320,7 @@ async def main():
     print("3. Test scraper fallback mechanism")
     print("4. Test 20 videos with different languages (comprehensive)")
     print("5. Test full pipeline")
-    print("6. Test hybrid validation")
-    print("7. Test DB validation")
-    print("8. Exit")
+    print("6. Exit")
 
     choice = input("\nEnter your choice (1-6): ")
 
@@ -462,10 +336,6 @@ async def main():
         await test_validation()
         await test_scraper_fallback()
     elif choice == "6":
-        await test_hybrid_validation()
-    elif choice == "7":
-        await test_db_validation()
-    elif choice == "8":
         print("Exiting.")
         return
     else:

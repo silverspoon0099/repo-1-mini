@@ -20,16 +20,15 @@ class ApiDojoTwitterScraper(Scraper):
 
     ACTOR_ID = "61RPP7dywgiy0JPD0"
 
-    SCRAPE_TIMEOUT_SECS = 300
+    SCRAPE_TIMEOUT_SECS = 120
 
     BASE_RUN_INPUT = {"maxRequestRetries": 5}
 
     # As of 2/5/24 this actor only takes 256 MB in the default config so we can run a full batch without hitting shared actor memory limits.
     concurrent_validates_semaphore = threading.BoundedSemaphore(20)
 
-    def __init__(self, runner: ActorRunner = ActorRunner(), dd_x_labels=None):
+    def __init__(self, runner: ActorRunner = ActorRunner()):
         self.runner = runner
-        self.dd_x_labels = dd_x_labels
 
     async def validate(self, entities: List[DataEntity], allow_low_engagement: bool = False) -> List[ValidationResult]:
         """Validate the correctness of a DataEntity by URI."""
@@ -42,7 +41,7 @@ class ApiDojoTwitterScraper(Scraper):
                     content_size_bytes_validated=entity.content_size_bytes,
                 )
             attempt = 0
-            max_attempts = 1
+            max_attempts = 2
 
             while attempt < max_attempts:
                 # Increment attempt.
@@ -104,6 +103,7 @@ class ApiDojoTwitterScraper(Scraper):
                         actual_view_count = view_counts[index]
                         break
 
+                bt.logging.debug(actual_tweet)
                 if actual_tweet is None:
                     # Only append a failed result if on final attempt.
                     if attempt == max_attempts:
@@ -211,7 +211,7 @@ class ApiDojoTwitterScraper(Scraper):
             bt.logging.error(
                 f"Failed to scrape tweets using search terms {query}: {traceback.format_exc()}."
             )
-            return [], False
+            return []
 
         # Return the parsed results, optionally disabling engagement filtering
         check_engagement = (
@@ -227,15 +227,9 @@ class ApiDojoTwitterScraper(Scraper):
 
         data_entities = []
         for x_content in x_contents:
-            data_entities.append(
-                XContent.to_data_entity(
-                    content=x_content,
-                    labels=scrape_config.labels,
-                    dd_x_labels=self.dd_x_labels,
-                )
-            )
+            data_entities.append(XContent.to_data_entity(content=x_content))
 
-        return data_entities, True
+        return data_entities
 
     async def on_demand_scrape(
         self,
@@ -784,22 +778,6 @@ async def test_multi_thread_validate():
     for t in threads:
         t.join(120)
 
-async def _test_scrape():
-    scraper = ApiDojoTwitterScraper()
-
-    entities = await scraper.scrape(
-        ScrapeConfig(
-            entity_limit=10,
-            date_range=DateRange(
-                start=dt.datetime(2025, 5, 17, 0, 0, 0, tzinfo=dt.timezone.utc),
-                end=dt.datetime(2025, 5, 18, 9, 0, 0, tzinfo=dt.timezone.utc),
-            ),
-            labels=[DataLabel(value="#bitcoinnews")],
-        )
-    )
-
-    bt.logging.success(entities)
-    return entities
 
 if __name__ == "__main__":
     bt.logging.set_trace(True)

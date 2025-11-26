@@ -17,9 +17,6 @@ import datetime as dt
 import sqlite3
 import contextlib
 import bittensor as bt
-import os
-import json
-from dynamic_desirability.constants import AGGREGATE_JSON_PATH, DEFAULT_SCALE_FACTOR
 
 
 # Use a timezone aware adapter for timestamp columns.
@@ -115,9 +112,6 @@ class SqliteMinerStorage(MinerStorage):
         self.cached_index_lock = threading.Lock()
         self.cached_index_4 = None
         self.cached_index_updated = dt.datetime.min
-        self.dd_path = os.path.join(os.path.dirname(__file__), "../../dynamic_desirability", AGGREGATE_JSON_PATH)
-        self.default_weight = DEFAULT_SCALE_FACTOR
-        self.max_age_in_hours = constants.DATA_ENTITY_BUCKET_AGE_LIMIT_DAYS * 24
 
     def _create_connection(self):
         # Create the database if it doesn't exist, defaulting to the local directory.
@@ -281,80 +275,26 @@ class SqliteMinerStorage(MinerStorage):
                     )
                     return
 
-            # Load DD weights from total.json
-            with open(self.dd_path, "r") as f:
-                dd_data = json.load(f)
-
-            dd_lookup = {
-                (DataSource[entry["source_name"].upper()].value, label.lower()): weight
-                for entry in dd_data
-                for label, weight in entry["label_weights"].items()
-            }
-
             with contextlib.closing(self._create_connection()) as connection:
                 cursor = connection.cursor()
-                
-                current_bucket_id = TimeBucket.from_datetime(dt.datetime.utcnow()).id
-                
+
                 oldest_time_bucket_id = TimeBucket.from_datetime(
                     dt.datetime.now()
                     - dt.timedelta(constants.DATA_ENTITY_BUCKET_AGE_LIMIT_DAYS)
                 ).id
 
-                # Create temporary table with score calculations
-                cursor.execute("DROP TABLE IF EXISTS ScaleFactors")
-                cursor.execute("""
-                    CREATE TEMP TABLE ScaleFactors (
-                        source INTEGER,
-                        label TEXT,
-                        scale_factor REAL
-                    )
-                """)
-            
-                cursor.executemany(
-                    "INSERT INTO ScaleFactors (source, label, scale_factor) VALUES (?, ?, ?)",
-                    [(source, label, weight) for (source, label), weight in dd_lookup.items()],
-                )
-                
-                # Temp table for Default Weights
-                cursor.execute("DROP TABLE IF EXISTS DefaultWeights")
-                cursor.execute("""
-                    CREATE TEMP TABLE DefaultWeights (
-                        source INTEGER,
-                        weight REAL
-                    )
-                """)
-                cursor.executemany(
-                    "INSERT INTO DefaultWeights (source, weight) VALUES (?, ?)",
-                    [(ds.value, ds.weight) for ds in DataSource if ds.weight > 0]
-                )
-                
-                # Compute scored buckets
+                # Get sum of content_size_bytes for all rows grouped by DataEntityBucket.
                 cursor.execute(
-                    """
-                    SELECT 
-                        SUM(d.contentSizeBytes) AS bucketSize,
-                        d.timeBucketId,
-                        d.source,
-                        d.label,
-                        COALESCE(s.scale_factor, ?) * dw.weight AS scale_factor,
-                        (1.0 - (1.0 * (? - d.timeBucketId) / (?))) * COALESCE(s.scale_factor, ?) * dw.weight * SUM(d.contentSizeBytes) AS score
-                    FROM DataEntity d
-                    LEFT JOIN ScaleFactors s ON s.source = d.source AND s.label = d.label
-                    JOIN DefaultWeights dw ON dw.source = d.source
-                    WHERE d.timeBucketId >= ?
-                    GROUP BY d.timeBucketId, d.source, d.label
-                    ORDER BY score DESC
-                    LIMIT ?
-                    """,
+                    """SELECT SUM(contentSizeBytes) AS bucketSize, timeBucketId, source, label FROM DataEntity
+                            WHERE timeBucketId >= ?
+                            GROUP BY timeBucketId, source, label
+                            ORDER BY bucketSize DESC
+                            LIMIT ?
+                            """,
                     [
-                        self.default_weight,
-                        current_bucket_id,
-                        self.max_age_in_hours * 2,
-                        self.default_weight,
                         oldest_time_bucket_id,
                         constants.DATA_ENTITY_BUCKET_COUNT_LIMIT_PER_MINER_INDEX_PROTOCOL_4,
-                    ]
+                    ],  # Always get the max for caching and truncate to each necessary size.
                 )
 
                 buckets_by_source_by_label = defaultdict(dict)
@@ -461,7 +401,7 @@ class SqliteMinerStorage(MinerStorage):
 
         # Force refresh index if 10 minutes beyond refersh period. Expected to be refreshed earlier by refresh loop.
         self.refresh_compressed_index(
-            time_delta=(constants.MINER_CACHE_FRESHNESS + dt.timedelta(minutes=5))
+            time_delta=(constants.MINER_CACHE_FRESHNESS + dt.timedelta(minutes=10))
         )
 
         with self.cached_index_lock:

@@ -217,8 +217,8 @@ def add_args(neuron_type: NeuronType, parser):
         parser.add_argument(
             "--use_uploader",
             action="store_true",
-            help="Set this flag to true to upload your data into S3 bucket",
-            default=False
+            help="Set this flag to true to upload your data into S3 storage",
+            default=True
         )
 
         parser.add_argument(
@@ -255,56 +255,6 @@ def add_args(neuron_type: NeuronType, parser):
             help="Set this flag to true to run the miner in offline mode.",
             default=False,
         )
-        
-        parser.add_argument(
-            "--compress",
-            action="store_true",
-            help="Set this flag to true to use ",
-            default=False,
-        )
-
-        parser.add_argument(
-            "--main_miner",
-            action="store_true",
-            help="Set this flag to true to use ",
-            default=False,
-        )
-
-        parser.add_argument(
-            "--custom_x",
-            action="store_true",
-            help="Set this flag to true to use ",
-            default=False,
-        )
-
-        parser.add_argument(
-            "--s3_multi_uploader",
-            action="store_true",
-            help="Run as S3 multi-uploader using multiple hotkeys/wallets.",
-            default=False,
-        )
-
-        parser.add_argument(
-            "--reddit_rescrape",
-            action="store_true",
-            help="Run Reddit Rescraper.",
-            default=False,
-        )
-
-        parser.add_argument(
-            "--youtube_rescrape",
-            action="store_true",
-            help="Run YouTube Rescraper.",
-            default=False,
-        )
-
-        parser.add_argument(
-            "--ondemand",
-            action="store_true",
-            help="Run OnDemand Rescraper.",
-            default=False,
-        )
-
     else:
         raise ValueError(f"Invalid neuron type: {neuron_type}")
 

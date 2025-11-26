@@ -4,13 +4,13 @@ import traceback
 import re
 import langcodes
 import bittensor as bt
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 import datetime as dt
 import os
 from xml.etree.ElementTree import ParseError
 from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig
 
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable, VideoUnplayable, RequestBlocked, IpBlocked, AgeRestricted
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import httpx
 from common.data import DataEntity, DataLabel, DataSource
 from common.date_range import DateRange
@@ -19,10 +19,7 @@ from scraping.youtube.model import YouTubeContent
 from scraping.youtube import utils as youtube_utils
 import isodate
 from dotenv import load_dotenv
-from utils.optimized_proxy_manager import OptimizedProxyManager, load_web_share_proxy
 import logging
-from decimal import Decimal, ROUND_HALF_UP
-
 
 # Try to import googleapiclient, but don't fail if it's not available
 try:
@@ -43,7 +40,7 @@ except ImportError:
 
 load_dotenv(override=True)
 
-# bt.logging.set_trace(True)
+bt.logging.set_trace(True)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # Keep this so httpx does not log api key
 
 _KEY_RE = re.compile(r"(?:key|apiKey)=[^&\s]+", re.I)
@@ -69,13 +66,10 @@ class YouTubeTranscriptScraper(Scraper):
     # Default language for transcripts
     DEFAULT_LANGUAGE = "en"
 
-    def __init__(self, proxy_manager=None, yt_api_key=None, storage=None):
-
+    def __init__(self):
         """Initialize the Enhanced YouTube Transcript Scraper."""
-        self.proxy_manager = proxy_manager
-        self.storage = storage
         # Get API key from environment variables
-        self.api_key = yt_api_key or os.getenv("YOUTUBE_API_KEY")
+        self.api_key = os.getenv("YOUTUBE_API_KEY")
         if not self.api_key:
             bt.logging.warning("YOUTUBE_API_KEY not found in environment variables")
 
@@ -103,9 +97,6 @@ class YouTubeTranscriptScraper(Scraper):
         if not self.use_googleapi:
             bt.logging.info("Using httpx for YouTube API calls")
 
-        self.scraped_video_ids: set[str] = set()
-        self.failed_en_transcripts: set[str] = set()
-
     async def scrape(self, scrape_config: ScrapeConfig) -> List[DataEntity]:
         """
         Scrapes YouTube transcripts according to the scrape config using unified labeling format.
@@ -127,7 +118,7 @@ class YouTubeTranscriptScraper(Scraper):
             channel_identifiers,
             max_entities,
             scrape_config.date_range
-        ), True
+        )
 
     def _parse_channel_configs_from_labels(self, labels: List[DataLabel]) -> List[str]:
         """
@@ -166,11 +157,6 @@ class YouTubeTranscriptScraper(Scraper):
         for channel_identifier in channel_identifiers:
             if total_videos >= max_entities:
                 break
-            if not self.scraped_video_ids:
-                self.scraped_video_ids = await asyncio.to_thread(
-                    self.storage.get_scraped_videos_by_channel_id,
-                    channel_id
-                )
 
             try:
                 bt.logging.info(f"Processing channel: {channel_identifier}")
@@ -194,9 +180,9 @@ class YouTubeTranscriptScraper(Scraper):
                 for video_info in channel_videos:
                     try:
                         video_id = video_info["id"]
-                
-                        # Get the transcript
-                        transcript_data = video_info["transcript"]
+
+                        # Get the transcript (let youtube-transcript-api choose best language)
+                        transcript_data = await self._get_transcript(video_id)
                         if not transcript_data:
                             bt.logging.warning(f"Failed to get transcript for video {video_id}")
                             continue
@@ -206,8 +192,6 @@ class YouTubeTranscriptScraper(Scraper):
                             video_info.get("publishedAt", "").replace('Z', '+00:00')
                         )
 
-                        self.scraped_video_ids.add(video_id)
-                        # Create YouTubeContent object
                         # Determine the language of the transcript
                         transcript_language = self._detect_transcript_language(transcript_data)
 
@@ -254,77 +238,6 @@ class YouTubeTranscriptScraper(Scraper):
                 continue
 
         bt.logging.success(f"Created {len(results)} DataEntity objects from channel scrape")
-        return results
-
-    async def _scrape_channel_by_id(self, channel_id: str, max_entities: int, date_range: DateRange) -> List[Dict[str, Any]]:
-        results = []
-        start_date = date_range.start if date_range.start.tzinfo else date_range.start.replace(tzinfo=dt.timezone.utc)
-        end_date = date_range.end if date_range.end.tzinfo else date_range.end.replace(tzinfo=dt.timezone.utc)
-
-        try:
-            # Check if the channel exists via channels.list
-            response = self.youtube.channels().list(id=channel_id, part="snippet").execute()
-            if not response.get("items"):
-                bt.logging.debug(f"Checking channel failed: {channel_id}")
-                return []            
-            channel_name = response["items"][0]["snippet"]["title"]
-            # Search recent videos with captions
-            search_response = self.youtube.search().list(
-                channelId=channel_id,
-                part="snippet",
-                type="video",
-                videoCaption="closedCaption",
-                order="date",
-                publishedAfter=start_date.isoformat(),
-                publishedBefore=end_date.isoformat(),
-                maxResults=max_entities
-            ).execute()
-
-            videos = search_response.get("items", [])
-
-            for item in videos:
-                video_id = item["id"]["videoId"]
-                if video_id in self.scraped_video_ids or video_id in self.failed_en_transcripts:
-                    continue
-                title = item["snippet"]["title"]
-                published_at = dt.datetime.fromisoformat(item["snippet"]["publishedAt"].replace("Z", "+00:00"))
-
-                if published_at < start_date or published_at > end_date:
-                    continue
-
-                # Check for English transcripts
-                try:
-                    transcript_data = await self._get_transcript(video_id)
-                    
-                    if not transcript_data:
-                        continue
-
-                    # Build YouTubeContent
-                    content = YouTubeContent(
-                        video_id=video_id,
-                        title=title,
-                        channel_id=channel_id,
-                        channel_name=channel_name,
-                        upload_date=published_at,
-                        transcript=transcript_data,
-                        url=f"https://www.youtube.com/watch?v={video_id}",
-                        language="en",
-                        duration_seconds=0  # Optional: calculate via videos.list if needed
-                    )
-
-                    content = self._compress_transcript(content)
-                    results.append(YouTubeContent.to_data_entity(content))
-
-                    if len(results) >= max_entities:
-                        break
-
-                except Exception as e:
-                    bt.logging.error(f"Failed processing video {item['id']['videoId']}: {str(e)}")
-                    continue
-
-        except Exception as e:
-            bt.logging.error(f"Error scraping channel {channel_id}: {str(e)}")
-
         return results
 
     async def _resolve_channel_id(self, channel_identifier: str) -> Optional[str]:
@@ -816,7 +729,7 @@ class YouTubeTranscriptScraper(Scraper):
                     "channelId": snippet.get("channelId", ""),
                     "channelTitle": snippet.get("channelTitle", ""),
                     "publishedAt": snippet.get("publishedAt", ""),
-                    "description": snippet.get("description"),
+                    "description": snippet.get("description", ""),
                     "duration_seconds": duration_seconds,
                     "view_count": int(statistics.get("viewCount", 0)),
                     "like_count": int(statistics.get("likeCount", 0))
@@ -854,7 +767,7 @@ class YouTubeTranscriptScraper(Scraper):
             "channelId": snippet.get("channelId", ""),
             "channelTitle": snippet.get("channelTitle", ""),
             "publishedAt": snippet.get("publishedAt", ""),
-            "description": snippet.get("description"),
+            "description": snippet.get("description", ""),
             "duration_seconds": duration_seconds,
             "view_count": int(statistics.get("viewCount", 0)),
             "like_count": int(statistics.get("likeCount", 0))
@@ -944,17 +857,23 @@ class YouTubeTranscriptScraper(Scraper):
             "duration_seconds": hash_value % 600  # 0-599 seconds
         }
 
-    async def _get_proxy_config(self):
+    def _get_proxy_config(self):
         """
-        Get proxy configuration based on environment variables or dynamic proxy manager.
+        Get proxy configuration based on environment variables.
         Supports WebShare, generic HTTP proxies, or no proxy.
         """
         try:
             # Check for generic HTTP proxy first (YTT_PROXY_*)
-            proxy_url = load_web_share_proxy()
+            host = os.getenv("YTT_PROXY_HOST")
+            port = os.getenv("YTT_PROXY_PORT")
 
-            if proxy_url:
-                return GenericProxyConfig(http_url=proxy_url)
+            if host and port:
+                user = os.getenv("YTT_PROXY_USERNAME", "")
+                pwd = os.getenv("YTT_PROXY_PASSWORD", "")
+                cred = f"{user}:{pwd}@" if user and pwd else ""
+                http_url = f"http://{cred}{host}:{port}"
+                https_url = f"https://{cred}{host}:{port}"
+                return GenericProxyConfig(http_url=http_url, https_url=https_url)
 
             # Check for WebShare proxy (WEB_SHARE_PROXY_*)
             elif os.getenv("WEB_SHARE_PROXY_USERNAME") and os.getenv("WEB_SHARE_PROXY_PASSWORD"):
@@ -962,11 +881,6 @@ class YouTubeTranscriptScraper(Scraper):
                     proxy_username=os.getenv("WEB_SHARE_PROXY_USERNAME"),
                     proxy_password=os.getenv("WEB_SHARE_PROXY_PASSWORD"),
                 )
-
-            # Check for dynamic proxy manager
-            elif hasattr(self, "proxy_manager") and self.proxy_manager:
-                proxy_url = await self.proxy_manager.get_proxy()
-                return GenericProxyConfig(http_url=proxy_url)
 
             # No proxy configured
             return None
@@ -984,10 +898,7 @@ class YouTubeTranscriptScraper(Scraper):
         Fetch a raw transcript list for a single YouTube video.
         Simple approach: get the first available transcript and return both data and language.
         """
-        if video_id in self.failed_en_transcripts:
-            return None
-            
-        proxy_config = await self._get_proxy_config()
+        proxy_config = self._get_proxy_config()
 
         for attempt in range(max_retries):
             try:
@@ -1030,156 +941,30 @@ class YouTubeTranscriptScraper(Scraper):
                     return None
 
             except (TranscriptsDisabled, NoTranscriptFound) as e:
-                # Known "no transcript" errors → no retries needed
-                bt.logging.warning(
-                    f"Transcript fetch failed (no transcript) for {video_id}: {e}"
-                )
-                self.failed_en_transcripts.add(video_id)
+                bt.logging.warning(f"Transcript fetch failed (no transcript) for {video_id}: {e!s}")
                 return None
 
-            except (VideoUnavailable, VideoUnplayable) as e:
-                bt.logging.warning(
-                    f"Transcript fetch failed (unplayable video) for {video_id}: {e}"
-                )
-                self.failed_en_transcripts.add(video_id)
-                return None
-
-            except (RequestBlocked, IpBlocked) as e:
-                bt.logging.warning(f"Proxy blocked on attempt {attempt + 1} for video {video_id}: {e}")
-                if attempt < max_retries:
-                    bt.logging.info(f"Retrying in 10s..")
-                    await asyncio.sleep(10)
-                return None
-
-            except AgeRestricted as e:
-                bt.logging.warning(
-                    f"Transcript fetch failed (age restricted) for {video_id}: {e}"
-                )
-                self.failed_en_transcripts.add(video_id)
-                return None
             except ParseError as e:
                 bt.logging.warning(
-                    f"[Attempt {attempt + 1}/{max_retries}] Transcript parse error for video {video_id}: {e}"
-                )
+                    f"[Attempt {attempt + 1}/{max_retries}] Transcript parse error for video {video_id}: {e}")
                 if attempt < max_retries - 1:
                     bt.logging.info("Retrying in 5s..")
                     await asyncio.sleep(5)
                 else:
                     bt.logging.warning(f"Giving up after {max_retries} attempts for {video_id}.")
-                    self.failed_en_transcripts.add(video_id)
                     return None
 
             except Exception as e:
                 bt.logging.warning(
-                    f"[Attempt {attempt + 1}/{max_retries}] Transcript fetch failed "
-                    f"for {video_id}: {e}"
-                )
-
-                bt.logging.trace(traceback.format_exc())
-
-                if attempt < max_retries:
-                    bt.logging.info(f"Retrying in 5s..")
+                    f"[Attempt {attempt + 1}/{max_retries}] Transcript fetch failed for {video_id}: {e!s}")
+                if attempt < max_retries - 1:
+                    bt.logging.info("Retrying in 5s...")
                     await asyncio.sleep(5)
                 else:
                     bt.logging.warning(f"Giving up after {max_retries} attempts for {video_id}.")
-                    self.failed_en_transcripts.add(video_id)
                     return None
 
-    async def _get_transcript_by_language(
-        self,
-        video_id: str,
-        language: str,
-    ):
-        """
-        Fetch transcript for `video_id` in the requested `language` only.
-        Single attempt using the classmethod API; on network/permission blocks,
-        return None so the caller can fall back to invideoiq.
-        """
-        def _snippet_to_plain(snippet: Any) -> Dict[str, Any]:
-            # Extract raw values from either dict or object
-            if isinstance(snippet, dict):
-                text = snippet.get("text", "") or ""
-                start_raw = snippet.get("start", 0)
-                duration_raw = snippet.get("duration", 0)
-            else:
-                text = getattr(snippet, "text", "") or ""
-                start_raw = getattr(snippet, "start", 0)
-                duration_raw = getattr(snippet, "duration", 0)
-
-            # Helpers for precise 3-dec rounding and formatting
-            def _q3(v) -> Decimal:
-                try:
-                    return Decimal(str(v)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-                except Exception:
-                    return Decimal("0.000")
-
-            def _fmt3(d: Decimal) -> str:
-                return format(d, ".3f")  # ensures trailing zeros
-
-            start = _q3(start_raw)
-            duration = _q3(duration_raw)
-            end = _q3(start + duration)
-
-            return {
-                "text": text,
-                "start": _fmt3(start),       # e.g. "0.400"
-                "duration": _fmt3(duration), # e.g. "4.160"
-                "end": _fmt3(end),           # e.g. "4.560"
-            }
-        
-        if not language:
-            return None
-        normalized_lang = language.strip().lower()
-
-        proxy_config = await self._get_proxy_config()
-        try:
-            ytt_api = YouTubeTranscriptApi(proxy_config=proxy_config)
-            result = ytt_api.fetch(
-                video_id=video_id,
-                languages=[normalized_lang],
-            )
-
-            if hasattr(result, "snippets"):
-                # New/obj form
-                snippets = getattr(result, "snippets", []) or []
-                transcript_plain = [_snippet_to_plain(s) for s in snippets]
-                if not transcript_plain:
-                    return None
-
-                out = {
-                    "video_id": getattr(result, "video_id", video_id),
-                    "language": getattr(result, "language", None),
-                    "selected_language": normalized_lang,
-                    "transcript": transcript_plain,
-                }
-                bt.logging.trace(f"Video {video_id}: succeed in YouTube data v3 api")
-                return out
-
-            else:
-                # Unexpected shape
-                bt.logging.trace("Unexpected transcript payload type")
-                return None
-
-        except (NoTranscriptFound, TranscriptsDisabled):
-            # requested language not available / transcripts disabled
-            bt.logging.trace("NoTranscriptFound error")
-            return None
-        except (VideoUnavailable, VideoUnplayable, AgeRestricted):
-            # video state prevents transcript
-            bt.logging.trace("VideoUnavailable error")
-            return None
-        except (RequestBlocked, IpBlocked):
-            # network/geo/proxy issue → let caller fall back to invideoiq
-            bt.logging.trace("RequestBlocked error")
-            return None
-        except ParseError:
-            bt.logging.trace("ParseError error")
-            return None
-        except Exception as e:
-            bt.logging.warning(f"_get_transcript_by_language unexpected error for {video_id}: {e}")
-            return None
-
-    def _extract_video_id_from_url(self, url: str) -> Optional[str]:
+    def _extract_video_id(self, url: str) -> Optional[str]:
         """
         Extract YouTube video ID from a URL.
         """
@@ -1256,7 +1041,7 @@ class YouTubeTranscriptScraper(Scraper):
         videos = []
         page_token = None
         api_calls = 0
-        max_api_calls = 1  # Limit API calls to prevent quota issues
+        max_api_calls = 5  # Limit API calls to prevent quota issues
 
         while len(videos) < max_results and api_calls < max_api_calls:
             api_calls += 1
@@ -1276,8 +1061,6 @@ class YouTubeTranscriptScraper(Scraper):
                 # Process each video
                 for item in playlist_response.get("items", []):
                     video_id = item["contentDetails"]["videoId"]
-                    if video_id in self.scraped_video_ids or video_id in self.failed_en_transcripts:
-                        continue
 
                     # Parse published date properly with timezone handling
                     try:
@@ -1319,8 +1102,7 @@ class YouTubeTranscriptScraper(Scraper):
                                 "title": item["snippet"]["title"],
                                 "publishedAt": published_at.isoformat(),
                                 "channelId": channel_id,
-                                "channelTitle": channel_name,
-                                "transcript": transcript,
+                                "channelTitle": channel_name
                             })
 
                             if len(videos) >= max_results:
@@ -1414,7 +1196,6 @@ class YouTubeTranscriptScraper(Scraper):
                         "publishedAt": published.isoformat(),
                         "channelId": channel_id,
                         "channelTitle": channel_name,
-                        "transcript": transcript,
                     }
                 )
 
@@ -1466,7 +1247,7 @@ async def test_scrape_channel():
 
     # Create a date range that includes recent videos
     date_range = DateRange(
-        start=dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30),
+        start=dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc),
         end=dt.datetime.now(dt.timezone.utc)
     )
 
@@ -1495,7 +1276,7 @@ async def test_scrape_channel():
 async def test_validate_entity(entity: DataEntity):
     """Test function for validating a specific entity."""
     # Create an instance of the scraper
-    scraper = YouTubeTranscriptScraper(OptimizedProxyManager())
+    scraper = YouTubeTranscriptScraper()
 
     # Validate the entity
     results = await scraper.validate([entity])
@@ -1523,98 +1304,14 @@ async def test_full_pipeline():
     bt.logging.info("\nAll tests completed!")
 
 
-async def test_scrape_specific_channel():
-    """Test function for scraping a specific channel."""
-    # Create an instance of the scraper
-    scraper = YouTubeTranscriptScraper(OptimizedProxyManager())
-
-    # Get channel ID from user input
-    channel_id = input("Enter YouTube channel ID: ")
-
-    # Create a date range for the past year
-    date_range = DateRange(
-        start=dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=365),
-        end=dt.datetime.now(dt.timezone.utc)
-    )
-
-    # Get number of videos to scrape
-    try:
-        max_videos = int(input("Enter maximum number of videos to scrape (1-10): "))
-        max_videos = max(1, min(10, max_videos))  # Clamp between 1 and 10
-    except ValueError:
-        max_videos = 3  # Default value
-
-    bt.logging.info(f"Scraping up to {max_videos} videos from channel {channel_id}")
-
-    # Scrape the channel
-    entities = await scraper._scrape_channels([channel_id], max_videos, date_range)
-
-    # Print the results
-    bt.logging.info(f"Scraped {len(entities)} entities from channel")
-    for entity in entities:
-        content = YouTubeContent.from_data_entity(entity)
-        bt.logging.info(f"Video: {content.title}")
-        bt.logging.info(f"Channel: {content.channel_name}")
-        bt.logging.info(f"Transcript length: {len(content.transcript)}")
-        if content.transcript:
-            bt.logging.info(f"First transcript chunk: {content.transcript[0]['text'][:100]}...")
-
-    return entities
-
-
-async def test_scrape_specific_video():
-    """Test function for scraping a specific video."""
-    # Create an instance of the scraper
-    scraper = YouTubeTranscriptScraper()
-
-    # Get video ID from user input
-    video_id = input("Enter YouTube video ID: ")
-
-    # Create a date range that includes all videos
-    date_range = DateRange(
-        start=dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc),
-        end=dt.datetime.now(dt.timezone.utc)
-    )
-
-    bt.logging.info(f"Scraping video {video_id}")
-
-    # Scrape the video
-    entities = await scraper._scrape_video_ids([video_id], date_range)
-
-    # Print the results
-    bt.logging.info(f"Scraped {len(entities)} entities")
-    for entity in entities:
-        content = YouTubeContent.from_data_entity(entity)
-        bt.logging.info(f"Video: {content.title}")
-        bt.logging.info(f"Channel: {content.channel_name}")
-        bt.logging.info(f"Transcript length: {len(content.transcript)}")
-        if content.transcript:
-            bt.logging.info(f"Sample transcript: {content.transcript[0]['text'][:100]}...")
-            bt.logging.info(f"Total transcript chunks: {len(content.transcript)}")
-
-    return entities
-
-async def test_validate():
-    data_entity = None
-
-    await test_validate_entity(data_entity)
-    
-async def test_get_transcript_by_language():
-    scraper = YouTubeTranscriptScraper()
-    transcript = await scraper._get_transcript_by_language(video_id="RfSr5sdFlhU", language="hi")
-    bt.logging.debug(transcript)
-    
 # Menu-based test runner
 async def main():
-    print("\nEnhanced YouTube Transcript Scraper - Test Menu")
-    print("=" * 50)
-    print("1. Run full pipeline test (default video and channel)")
-    print("2. Scrape a specific video (provide video ID)")
-    print("3. Scrape videos from a specific channel (provide channel ID)")
-    print("4. Test validate DataEntity which scraped Custom scraper")
-    print("5. Test scrape channel info")
-    print("6. Test get transcript single video")
-    print("7. Exit")
+    print("\nUpdated YouTube Transcript Scraper with Unified Labeling - Test Menu")
+    print("=" * 70)
+    print("1. Test channel scraping with unified format (#ytc_c_)")
+    print("2. Test validation")
+    print("3. Test full pipeline")
+    print("4. Exit")
 
     choice = input("\nEnter your choice (1-4): ")
 
@@ -1627,12 +1324,6 @@ async def main():
     elif choice == "3":
         await test_full_pipeline()
     elif choice == "4":
-        await test_validate()
-    elif choice == "5":
-        await test_scrape_specific_channel()
-    elif choice == "6":
-        await test_get_transcript_by_language()
-    elif choice == "7":
         print("Exiting test program.")
         return
     else:
@@ -1642,6 +1333,5 @@ async def main():
 
 # Entry point for running the tests
 if __name__ == "__main__":
-    bt.logging.set_trace()
     bt.logging.info("Starting updated YouTube scraper tests...")
     asyncio.run(main())

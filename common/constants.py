@@ -31,7 +31,7 @@ PROTOCOL_VERSION = 4
 MIN_EVALUATION_PERIOD = dt.timedelta(minutes=60)
 
 # Miner compressed index cache freshness.
-MINER_CACHE_FRESHNESS = dt.timedelta(minutes=10)
+MINER_CACHE_FRESHNESS = dt.timedelta(minutes=20)
 
 # Date after which only x.com URLs are accepted
 NO_TWITTER_URLS_DATE = dt.datetime(2024, 12, 28, tzinfo=dt.timezone.utc)  # December 28, 2024 UTC

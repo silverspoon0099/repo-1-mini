@@ -17,16 +17,12 @@ class ScraperId(str, Enum):
     REDDIT_MC = "Reddit.mc"
     X_MICROWORLDS = "X.microworlds"
     X_APIDOJO = "X.apidojo"
-    X_LOBSTR = "X.lobstr"
     X_QUACKER = "X.quacker"
-    X_CUSTOM = "X.custom"
     YOUTUBE_CUSTOM_TRANSCRIPT = "YouTube.custom.transcript"
-    YOUTUBE_APIFY_EN_TRANSCRIPT = "YouTube.apify.en_transcript"
     YOUTUBE_APIFY_TRANSCRIPT = "YouTube.apify.transcript"
     YOUTUBE_CRAWLMASTER_TRANSCRIPT = "YouTube.crawlmaster.transcript"
     YOUTUBE_STARVIBE_TRANSCRIPT = "YouTube.starvibe.transcript"
     YOUTUBE_MULTI_ACTOR = "YouTube.multi.actor"
-    YOUTUBE_SCRAPINGDOG_TRANSCRIPT = "YouTube.scrapingdog.transcript"
 
 
 class ValidationResult(StrictBaseModel):
@@ -80,10 +76,7 @@ class ScrapeConfig(StrictBaseModel):
         default=None,
         description="Optional labels to filter the scrape by. If none are provided, the data source will issue a scrape for 'all' data, without any label filters applied",
     )
-    frequency: Optional[PositiveInt] = Field(
-        default=60,
-        description="cadence_seconds from scraper_config",
-    )
+
 
 class LabelScrapingFrequency(StrictBaseModel):
     """Data class to contain the frequency distribution for a set of labels."""

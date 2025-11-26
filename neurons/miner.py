@@ -26,14 +26,6 @@ import traceback
 import typing
 import bittensor as bt
 import datetime as dt
-import os
-from typing import List, Optional
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from utils.custom_logging import setup_bt_logging
-setup_bt_logging()
-
 from common import constants, utils
 from common.data import CompressedMinerIndex, TimeBucket
 from common.protocol import (
@@ -43,23 +35,39 @@ from common.protocol import (
     REQUEST_LIMIT_BY_TYPE_PER_PERIOD,
 )
 
+from scraping.config.config_reader import ConfigReader
+from scraping.coordinator import ScraperCoordinator
 from scraping.provider import ScraperProvider
-from storage.miner.postgresql_miner_storage import PostgreSQLMinerStorage
+from storage.miner.sqlite_miner_storage import SqliteMinerStorage
 from neurons.config import NeuronType, check_config, create_config
+from data_universe_api import (
+    ListActiveJobsRequest,
+    DataUniverseApiClient,
+    OnDemandJob,
+    OnDemandJobPayloadReddit,
+    OnDemandJobPayloadX,
+    OnDemandJobPayloadYoutube,
+    OnDemandMinerUpload,
+)
+from upload_utils.s3_uploader import S3PartitionedUploader
+from dynamic_desirability.desirability_retrieval import sync_run_retrieval
 
 from common.data import DataLabel, DataSource, DataEntity
 from common.protocol import OnDemandRequest
+from common.date_range import DateRange
 from scraping.scraper import ScrapeConfig, ScraperId
 
 from scraping.x.apidojo_scraper import ApiDojoTwitterScraper
+from scraping.reddit.reddit_custom_scraper import RedditCustomScraper
 from scraping.reddit.reddit_json_scraper import RedditJsonScraper
+import json
+
+from vali_utils.on_demand.output_models import create_organic_output_dict
 
 # Enable logging to the miner TODO move it to some different location
 bt.logging.set_info(True)
 bt.logging.set_debug(True)
 
-from dotenv import load_dotenv
-load_dotenv(dotenv_path=".env", override=True)
 
 class Miner:
     """The Glorious Miner."""
@@ -70,35 +78,28 @@ class Miner:
 
         bt.logging(config=self.config, logging_dir=self.config.full_path)
         bt.logging.info(self.config)
-        self.use_gravity_retrieval = self.config.gravity
-        self.use_compress = self.config.compress
-        self.use_custom_x = self.config.custom_x
-        self.is_main_miner = self.config.main_miner
         self.use_uploader = self.config.use_uploader
-        self.use_s3_multi_uploader = self.config.s3_multi_uploader
-        self.use_reddit_rescrape = self.config.reddit_rescrape
-        self.use_youtube_rescrape = self.config.youtube_rescrape
-        self.use_ondemand = self.config.ondemand
-        self.wallet = None
+        self.use_gravity_retrieval = self.config.gravity
 
-        # The subtensor is our connection to the Bittensor blockchain.
-        self.subtensor = bt.subtensor(config=self.config)
-        bt.logging.info(f"Subtensor: {self.subtensor}.")
+        # The wallet holds the cryptographic key pairs for the miner.
+        self.wallet = bt.wallet(config=self.config)
+        bt.logging.info(f"Wallet: {self.wallet}.")
 
         if self.config.offline:
-            bt.logging.success("Running in offline mode. Skipping bittensor object setup and axon creation.")
+            bt.logging.success(
+                "Running in offline mode. Skipping bittensor object setup and axon creation."
+            )
 
             self.uid = 0  # Offline mode so assume it's == 0
-
         else:
+            # The subtensor is our connection to the Bittensor blockchain.
+            self.subtensor = bt.subtensor(config=self.config)
+            bt.logging.info(f"Subtensor: {self.subtensor}.")
+
             # The metagraph holds the state of the network, letting us know about other validators and miners.
             self.metagraph = self.subtensor.metagraph(self.config.netuid)
             bt.logging.info(f"Metagraph: {self.metagraph}.")
 
-            # The wallet holds the cryptographic key pairs for the miner.
-            self.wallet = bt.wallet(config=self.config)
-            bt.logging.info(f"Wallet: {self.wallet}.")
-        
             # Each miner gets a unique identity (UID) in the network for differentiation.
             # TODO: Stop doing meaningful work in the constructor to make neurons more testable.
             if self.wallet.hotkey.ss58_address in self.metagraph.hotkeys:
@@ -144,13 +145,45 @@ class Miner:
         self.should_exit: bool = False
         self.is_running: bool = False
         self.thread: threading.Thread = None
+        self.compressed_index_refresh_thread: threading.Thread = None
+        self.lookup_thread: threading.Thread = None
+        self.s3_partitioned_thread: threading.Thread = None
+
         self.lock = threading.RLock()
         self.vpermit_rao_limit = self.config.vpermit_rao_limit
+
+        if self.use_uploader and not self.config.offline:
+            self.s3_partitioned_uploader = S3PartitionedUploader(
+                db_path=self.config.neuron.database_name,
+                subtensor=self.subtensor,
+                wallet=self.wallet,
+                s3_auth_url=self.config.s3_auth_url,
+                state_file=self.config.miner_upload_state_file,
+            )
+
         # Instantiate storage.
-        self.storage = PostgreSQLMinerStorage(use_compress=self.use_compress, wallet=self.wallet)
+        self.storage = SqliteMinerStorage(
+            self.config.neuron.database_name,
+            self.config.neuron.max_database_size_gb_hint,
+        )
 
         bt.logging.success(
             f"Successfully connected to miner storage: {self.config.neuron.database_name}."
+        )
+
+        # Configure the ScraperCoordinator
+        bt.logging.info(
+            f"Loading scraping config from {self.config.neuron.scraping_config_file}."
+        )
+        scraping_config = ConfigReader.load_config(
+            self.config.neuron.scraping_config_file
+        )
+        bt.logging.success(f"Loaded scraping config: {scraping_config}.")
+
+        self.scraping_coordinator = ScraperCoordinator(
+            scraper_provider=ScraperProvider(),
+            miner_storage=self.storage,
+            config=scraping_config,
         )
 
         # Configure per hotkey per request limits.
@@ -158,12 +191,121 @@ class Miner:
         self.last_cleared_request_limits = dt.datetime.now()
         self.requests_by_type_by_hotkey = defaultdict(lambda: defaultdict(lambda: 0))
 
+        self.data_universe_api_base_url = (
+            "https://data-universe-api-branch-main.api.macrocosmos.ai"
+            if "test" in self.config.subtensor.network
+            else "https://data-universe-api.api.macrocosmos.ai"
+        )
+        self.verify_ssl = "localhost" not in self.data_universe_api_base_url
+        bt.logging.info(
+            f"Using Data Universe API URL: {self.data_universe_api_base_url}, {self.verify_ssl=}"
+        )
+
+        self.on_demand_thread: threading.Thread = None
+        self.on_demand_job_queue: asyncio.Queue[OnDemandJob] = asyncio.Queue()
+        self.processed_job_ids_cache = utils.LRUSet(capacity=10_000)
+
+    def refresh_index(self):
+        """
+        Refreshes the cached compressed miner index periodically off the hot path of GetMinerIndex requests.
+        """
+        while not self.should_exit:
+            try:
+                # Refresh the index if it hasn't been refreshed in the configured time period.
+                self.storage.refresh_compressed_index(
+                    time_delta=constants.MINER_CACHE_FRESHNESS
+                )
+                bt.logging.trace("Refresh index thread finished refreshing the index.")
+                # Wait freshness period + 1 minute to try refreshing again.
+                # Wait the additional minute to ensure that the next refresh sees a 'stale' index.
+                time.sleep(
+                    (
+                        constants.MINER_CACHE_FRESHNESS + dt.timedelta(minutes=1)
+                    ).total_seconds()
+                )
+            # In case of unforeseen errors, the refresh thread will log the error and continue operations.
+            except Exception:
+                bt.logging.error(traceback.format_exc())
+                # Sleep 5 minutes to avoid constant refresh attempts if they are consistently erroring.
+                time.sleep(60 * 5)
+
+    def get_updated_lookup(self):
+        if not self.use_gravity_retrieval:
+            bt.logging.info("Gravity lookup retrieval is not enabled.")
+            return
+
+        last_update = None
+        while not self.should_exit:
+            try:
+                current_datetime = dt.datetime.utcnow()
+
+                bt.logging.info(
+                    f"Checking for update. Last update: {last_update}, Current time: {current_datetime}"
+                )
+
+                # Check if it's a new day and we haven't updated yet
+                if last_update is None or current_datetime.date() > last_update.date():
+                    bt.logging.info("Retrieving the latest dynamic lookup...")
+                    sync_run_retrieval(self.config)
+                    bt.logging.info(
+                        f"New desirable data list has been written to total.json"
+                    )
+                    last_update = current_datetime
+                    bt.logging.info(f"Updated dynamic lookup at {last_update}")
+                else:
+                    bt.logging.info("No update needed at this time.")
+
+                # Sleep for 5 minutes before checking again
+                bt.logging.info("Sleeping for 5 minutes...")
+                time.sleep(300)
+
+            except Exception as e:
+                bt.logging.error(f"Error in get_updated_lookup: {str(e)}")
+                bt.logging.exception("Exception details:")
+                time.sleep(300)  # Wait 5 minutes before trying again
+
+    def upload_s3_partitioned(self):
+        """Upload DD data to S3 in partitioned format"""
+        # Wait 10 minutes before starting first upload
+        time_sleep_val = dt.timedelta(minutes=30).total_seconds()
+        time.sleep(time_sleep_val)
+
+        while not self.should_exit:
+            try:
+                bt.logging.info("Starting S3 partitioned upload for DD data")
+                success = self.s3_partitioned_uploader.upload_dd_data()
+                if success:
+                    bt.logging.success("S3 partitioned upload completed successfully")
+                else:
+                    bt.logging.warning(
+                        "S3 partitioned upload completed with some failures"
+                    )
+            except Exception:
+                bt.logging.error(traceback.format_exc())
+
+            # Upload every 2 hours
+            time_sleep_val = dt.timedelta(hours=2).total_seconds()
+            time.sleep(time_sleep_val)
+
+    def run_on_demand(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        poll_task = loop.create_task(self.poll_on_demand_active_jobs())
+        process_task = loop.create_task(self.process_on_demand_jobs_queue())
+
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
+            loop = None
+
+
     def run(self):
         """
         Initiates and manages the main loop for the miner.
         """
-        time.sleep(30) # wait for MinerStorage initialization
-        
+
         if self.config.offline:
             bt.logging.success("Running in offline mode. Skipping axon serving.")
         else:
@@ -182,6 +324,8 @@ class Miner:
 
             self.last_sync_timestamp = dt.datetime.now()
             bt.logging.success(f"Miner starting at {self.last_sync_timestamp}.")
+
+        self.scraping_coordinator.run_in_background_thread()
 
         while not self.should_exit:
             # This loop maintains the miner's operations until intentionally stopped.
@@ -214,12 +358,164 @@ class Miner:
             except KeyboardInterrupt:
                 if not self.config.offline:
                     self.axon.stop()
+                self.scraping_coordinator.stop()
                 bt.logging.success("Miner killed by keyboard interrupt.")
                 sys.exit()
 
             # In case of unforeseen errors, the miner will log the error and continue operations.
             except Exception as e:
                 bt.logging.error(traceback.format_exc())
+
+    def _on_demand_client(self) -> DataUniverseApiClient:
+        return DataUniverseApiClient(
+            base_url=self.data_universe_api_base_url,
+            verify_ssl=self.verify_ssl,
+            keypair=self.wallet.hotkey,
+        )
+
+    async def poll_on_demand_active_jobs(self):
+        while not self.should_exit:
+            try:
+                since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=2)
+                bt.logging.info(
+                    f"Pulling latest active jobs since {since.strftime("%d/%m/%Y, %H:%M:%S")} UTC"
+                )
+
+                async with self._on_demand_client() as client:
+                    active_jobs_response = await client.miner_list_active_jobs(
+                        req=ListActiveJobsRequest(since=since)
+                    )
+            except:
+                bt.logging.exception("Failed to list active jobs")
+                await asyncio.sleep(5.0)
+                continue
+
+            try:
+                jobs_to_process = [job for job in active_jobs_response.jobs if job.id not in self.processed_job_ids_cache]
+
+                if len(jobs_to_process) > 0:
+                    bt.logging.info(
+                        f"Adding {len(active_jobs_response.jobs)} to on demand scrape queue"
+                    )
+
+                for job in jobs_to_process:
+                    await self.on_demand_job_queue.put(job)
+
+                    self.processed_job_ids_cache.add(job.id)
+            except:
+                bt.logging.exception("Failed to append to on_demand_job_queue")
+
+            await asyncio.sleep(5.0)
+
+    async def process_on_demand_jobs_queue(self):
+        while not self.should_exit:
+            try:
+                job_request = await asyncio.wait_for(
+                    self.on_demand_job_queue.get(), timeout=20.0
+                )
+                # or await task if you get rate limited / want to process 1 at a time
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                bt.logging.exception("Failed to get item from on_demand_job_queue")
+                continue
+            
+            try:
+                # miner tune this on how fast you can process a job
+                process_on_demand_minimum_duration = dt.timedelta(seconds=5)
+                has_enough_time_to_process = (
+                    dt.datetime.now(dt.timezone.utc) + process_on_demand_minimum_duration
+                    >= job_request.expire_at
+                )
+                if has_enough_time_to_process:
+                    bt.logging.warning(
+                        f"Not enough time to process job that expires at {job_request.expire_at}"
+                    )
+                    continue
+                
+                task = self.scrape_on_demand_job(job_request=job_request)
+                asyncio.create_task(task)
+                # or
+                # await task
+                # if you want to process 1-1 instead of all in parallel
+            except:
+                bt.logging.exception("Failed to process item from on_demand_job_queue")
+
+    async def scrape_on_demand_job(self, job_request: OnDemandJob):
+        try:
+            bt.logging.info(
+                f"Starting on demand scrape for job with id {job_request.id}:\n\n {job_request}"
+            )
+
+            # map job request to existing synapse on demand
+            usernames: typing.Optional[typing.List[str]] = []
+            keywords: typing.Optional[typing.List[str]] = []
+            url: typing.Optional[str] = None
+
+            data_source: DataSource
+            if job_request.job.platform == "x":
+                data_source = DataSource.X
+                x_job: OnDemandJobPayloadX = job_request.job
+                usernames = x_job.usernames
+                keywords = x_job.keywords
+                url = x_job.url
+
+            if job_request.job.platform == "youtube":
+                data_source = DataSource.YOUTUBE
+                yt_job: OnDemandJobPayloadYoutube = job_request.job
+                usernames = yt_job.channels
+                url = yt_job.url
+
+            if job_request.job.platform == "reddit":
+                data_source = DataSource.REDDIT
+                rd_job: OnDemandJobPayloadReddit = job_request.job
+                usernames = rd_job.usernames
+
+                if rd_job.subreddit:
+                    keywords = [rd_job.subreddit]
+
+                if rd_job.keywords:
+                    keywords.extend(rd_job.keywords)
+
+            # process
+            synapse_resp = await self.loop_poll_on_demand_active_jobs(
+                synapse=OnDemandRequest(
+                    source=data_source,
+                    limit=job_request.limit,
+                    start_date=(
+                        job_request.start_date.isoformat()
+                        if job_request.start_date
+                        else None
+                    ),
+                    end_date=(
+                        job_request.end_date.isoformat() if job_request.end_date else None
+                    ),
+                    keyword_mode=job_request.keyword_mode,
+                    usernames=usernames if usernames is not None else [],
+                    keywords=keywords if keywords is not None else [],
+                    url=url,
+                    data=[],
+                ),
+                reraise_instead_of_return_empty=True
+            )
+
+            data = synapse_resp.data
+            bt.logging.debug(f"Scraped (through synapse) on demand data entities for job_id: {job_request.id}, payload:\n\n{data}")
+
+            miner_upload = OnDemandMinerUpload(data_entities=data)
+            bt.logging.debug(f"\nprocessed data (DataContent form): {miner_upload}")
+
+            bt.logging.info(
+                f"Submitting and uploading data for job with id: {job_request.id}"
+            )
+            try:
+                async with self._on_demand_client() as client:
+                    await client.miner_submit_and_upload(job_id=job_request.id, data=miner_upload)
+            except:
+                bt.logging.exception(f"Failed to submit and upload data for job with {job_request.id}")
+        except:
+            bt.logging.exception("Failed to process scrape on demand job")
+        
 
     def run_in_background_thread(self):
         """
@@ -229,9 +525,24 @@ class Miner:
         if not self.is_running:
             bt.logging.debug("Starting miner in background thread.")
             self.should_exit = False
-
             self.thread = threading.Thread(target=self.run, daemon=True)
             self.thread.start()
+            self.compressed_index_refresh_thread = threading.Thread(
+                target=self.refresh_index, daemon=True
+            )
+            self.compressed_index_refresh_thread.start()
+            self.lookup_thread = threading.Thread(
+                target=self.get_updated_lookup, daemon=True
+            )
+            self.lookup_thread.start()
+
+            self.s3_partitioned_thread = threading.Thread(
+                target=self.upload_s3_partitioned, daemon=True
+            )
+            self.s3_partitioned_thread.start()
+
+            self.on_demand_thread = threading.Thread(target=self.run_on_demand, daemon=True)
+            self.on_demand_thread.start()
 
             self.is_running = True
             bt.logging.debug("Started")
@@ -243,9 +554,11 @@ class Miner:
         if self.is_running:
             bt.logging.debug("Stopping miner in background thread.")
             self.should_exit = True
-
-            if not self.config.offline:
-                self.axon.stop()
+            self.thread.join(5)
+            self.compressed_index_refresh_thread.join(5)
+            self.s3_partitioned_thread.join(5)
+            self.lookup_thread.join(5)
+            self.on_demand_thread.join(5)
 
             self.is_running = False
             bt.logging.debug("Stopped")
@@ -272,7 +585,6 @@ class Miner:
                        None if the context was exited without an exception.
         """
         self.stop_run_thread()
-        self.storage.close_pool()
 
     def resync_metagraph(self):
         """Resyncs the metagraph and updates the hotkeys and moving averages based on the new metagraph."""
@@ -308,10 +620,10 @@ class Miner:
 
     async def get_index(self, synapse: GetMinerIndex) -> GetMinerIndex:
         """Runs after the GetMinerIndex synapse has been deserialized (i.e. after synapse.data is available)."""
-        hotkey = synapse.dendrite.hotkey
         bt.logging.info(
-            f"Got to a GetMinerIndex request from {hotkey}."
+            f"Got to a GetMinerIndex request from {synapse.dendrite.hotkey}."
         )
+
         # Only synapse.version 4 is supported at this time.
         if synapse.version < 4:
             bt.logging.error(f"Unsupported protocol version: {synapse.version}.")
@@ -319,13 +631,12 @@ class Miner:
 
         # Return the appropriate amount of max buckets based on protocol of the requesting validator.
         compressed_index = self.storage.get_compressed_index(
-            bucket_count_limit=constants.DATA_ENTITY_BUCKET_COUNT_LIMIT_PER_MINER_INDEX_PROTOCOL_4,
-            hotkey=hotkey
+            bucket_count_limit=constants.DATA_ENTITY_BUCKET_COUNT_LIMIT_PER_MINER_INDEX_PROTOCOL_4
         )
         synapse.compressed_index_serialized = compressed_index.model_dump_json()
         bt.logging.success(
             f"Returning compressed miner index of {CompressedMinerIndex.size_bytes(compressed_index)} bytes "
-            + f"across {CompressedMinerIndex.bucket_count(compressed_index)} buckets to {hotkey}."
+            + f"across {CompressedMinerIndex.bucket_count(compressed_index)} buckets to {synapse.dendrite.hotkey}."
         )
 
         synapse.version = constants.PROTOCOL_VERSION
